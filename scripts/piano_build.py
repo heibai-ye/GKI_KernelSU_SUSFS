@@ -103,7 +103,7 @@ def adapt(root, output):
     symbol_list = "android/abi_gki_aarch64_xiaomi"
     original = (common / symbol_list).read_text()
     updated = original.rstrip() + "\n"
-    for symbol in PIANO_EXPORTS:
+    for symbol in (*PIANO_EXPORTS, "__traceiter_android_vh_mmput_mm"):
         if symbol not in updated.splitlines():
             updated += symbol + "\n"
     changes[symbol_list] = (original, updated)
