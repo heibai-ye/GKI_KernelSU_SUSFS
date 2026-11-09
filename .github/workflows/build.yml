@@ -96,6 +96,10 @@ on:
         required: false
         type: boolean
         default: false
+      piano_verified_baseline:
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   build-kernel:
@@ -440,7 +444,12 @@ jobs:
           echo "REMOTE_BRANCH=$REMOTE_BRANCH" >> $GITHUB_ENV
           echo "TAG_FALLBACK=$TAG_FALLBACK" >> $GITHUB_ENV
 
+      - name: 固定 piano 候选源码
+        if: inputs.piano_verified_baseline
+        run: python3 scripts/piano_build.py pin
+
       - name: 应用 Stock Config 伪装
+        if: ${{ !inputs.piano_verified_baseline }}
         run: |
           STOCK_SRC="$GITHUB_WORKSPACE/config/stock_defconfig"
           STOCK_DST="$KERNEL_ROOT/common/arch/arm64/configs/stock_defconfig"
@@ -589,7 +598,14 @@ jobs:
           case "${{ inputs.ksu_variant }}" in
             "Official")
               echo "添加 KernelSU 官方版..."
-              curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash $BRANCH
+              if [ "${{ inputs.piano_verified_baseline }}" = "true" ]; then
+                KSU_PIN=0c0fdb960178fa12d80d6cbcfdcb6ad8be6a865d
+                curl -fLSs --retry 3 "https://raw.githubusercontent.com/tiann/KernelSU/$KSU_PIN/kernel/setup.sh" -o /tmp/piano-ksu-setup.sh
+                bash /tmp/piano-ksu-setup.sh "$KSU_PIN"
+                test "$(git -C KernelSU rev-parse HEAD)" = "$KSU_PIN"
+              else
+                curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash $BRANCH
+              fi
 
               cd KernelSU
               KSU_GIT_VERSION=$(git rev-list --count HEAD)
@@ -877,6 +893,15 @@ jobs:
       - name: 克隆 Droidspaces 补丁仓库
         if: inputs.droidspaces != 'off'
         run: |
+          if [ "${{ inputs.piano_verified_baseline }}" = "true" ]; then
+            PATCH_DIR="$RUNNER_TEMP/piano-patches/below-kernel-6.12"
+            mkdir -p "$PATCH_DIR"
+            PATCH_FILE="$PATCH_DIR/001.GKI-below-6.12-fix_sysvipc_kabi_3_4_5.patch"
+            curl -fLSs --retry 3 https://raw.githubusercontent.com/Goldzxcbug/Droidspaces_Kernel_patch/dc0f76bedd790b7738e5695509297ee71ca4a2c2/GKI/6.6/GKI-6.6-sysvipc_kabi_3_4_5.patch -o "$PATCH_FILE"
+            echo "c47ff9ebb015430913058b3a08182b8c379812731613e1b23804eb6fa4e29ea4  $PATCH_FILE" | sha256sum -c -
+            echo "DROIDSPACES_PATCHES=$RUNNER_TEMP/piano-patches" >> "$GITHUB_ENV"
+            exit 0
+          fi
           git clone --depth 1 https://github.com/ravindu644/Droidspaces-OSS.git /tmp/Droidspaces-OSS
           echo "DROIDSPACES_PATCHES=/tmp/Droidspaces-OSS/Documentation/resources/kernel-patches/GKI" >> $GITHUB_ENV
 
@@ -931,7 +956,11 @@ jobs:
               exit 0
               ;;
           esac
-          if ! patch -p1 --forward < "$PATCH_FILE"; then
+          if [ "${{ inputs.piano_verified_baseline }}" = "true" ]; then
+            test "$SLOT" = 345
+            patch --batch --forward --dry-run -p1 < "$PATCH_FILE"
+            patch --batch --forward --no-backup-if-mismatch -p1 < "$PATCH_FILE"
+          elif ! patch -p1 --forward < "$PATCH_FILE"; then
             echo "::warning::SYSVIPC kABI 补丁应用失败，可能已应用或上下文不匹配"
           fi
 
@@ -1536,6 +1565,10 @@ jobs:
             fi
           fi
 
+      - name: 核对 piano 构建前配置与补丁
+        if: inputs.piano_verified_baseline
+        run: python3 scripts/piano_build.py prepare
+
       - name: 编译内核
         id: compile_kernel
         uses: nick-fields/retry@v4
@@ -1607,6 +1640,19 @@ jobs:
               echo "退出码: $BUILD_STATUS"
             } >> "$LOG_FILE"
             exit "$BUILD_STATUS"
+
+      - name: 收集 piano 实际配置与 ABI 核验材料
+        if: inputs.piano_verified_baseline
+        run: python3 scripts/piano_build.py collect
+
+      - name: 上传 piano 核验材料
+        if: ${{ always() && inputs.piano_verified_baseline }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: piano-droidspaces-verification
+          path: piano-verification/
+          if-no-files-found: error
+          compression-level: 6
 
       - name: 整理编译失败日志
         if: ${{ always() && steps.compile_kernel.outcome == 'failure' }}

@@ -1,0 +1,40 @@
+name: Piano Droidspaces 6.6.77 candidate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: piano-droidspaces-candidate
+  cancel-in-progress: false
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+    with:
+      android_version: android15
+      kernel_version: "6.6"
+      sub_level: "77"
+      os_patch_level: "2025-03"
+      revision: r1
+      ksu_variant: Official
+      ksu_mode: 禁用SUSFS
+      version: "-android15-8-piano-ds-4k"
+      build_time: "N"
+      use_zram: false
+      use_bbg: false
+      use_kpm: "disabled (关闭)"
+      enable_susfs: false
+      use_rekernel: false
+      use_nomount: false
+      use_networking: false
+      cve_2026_43499_patch: true
+      export_susfs_patches: false
+      supp_op: false
+      droidspaces: "345"
+      artifact_upload_mode: 上传全部
+      droidspaces_ntsync: false
+      piano_verified_baseline: true
