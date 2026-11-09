@@ -1,4 +1,5 @@
 import hashlib
+import difflib
 import json
 import os
 from pathlib import Path
@@ -21,6 +22,11 @@ REQUIRED = (
     "IKCONFIG_PROC",
 )
 DISABLED = ("CFS_BANDWIDTH", "CGROUP_PIDS", "NTSYNC", "KSU_SUSFS", "KPM")
+PIANO_EXPORTS = {
+    "read_swap_cache_async": "0xdb73214a",
+    "vfs_fadvise": "0xa875d8db",
+    "__tracepoint_android_vh_mmput_mm": "0x21144ff6",
+}
 
 
 def git(directory, *arguments):
@@ -62,6 +68,58 @@ def pin(root, output):
         "droidspaces_patch_commit": PATCH_COMMIT,
         "running_kernel_exact_source_confirmed": False,
         "flash_ready": False,
+    }, indent=2) + "\n")
+
+
+def adapt(root, output):
+    common = root / "common"
+    replacements = {
+        "mm/swap_state.c": (
+            "\treturn retpage;\n}\n\nstatic unsigned int __swapin_nr_pages",
+            "\treturn retpage;\n}\nEXPORT_SYMBOL_GPL(read_swap_cache_async);\n\nstatic unsigned int __swapin_nr_pages",
+        ),
+        "kernel/fork.c": (
+            "\t\ttrace_android_vh_mmput(NULL);\n\t\t__mmput(mm);",
+            "\t\ttrace_android_vh_mmput(NULL);\n\t\ttrace_android_vh_mmput_mm(mm);\n\t\t__mmput(mm);",
+        ),
+        "include/trace/hooks/sched.h": (
+            "DECLARE_HOOK(android_vh_mmput,\n\tTP_PROTO(void *unused),\n\tTP_ARGS(unused));",
+            "DECLARE_HOOK(android_vh_mmput,\n\tTP_PROTO(void *unused),\n\tTP_ARGS(unused));\n\nstruct mm_struct;\nDECLARE_HOOK(android_vh_mmput_mm,\n\tTP_PROTO(struct mm_struct *mm),\n\tTP_ARGS(mm));",
+        ),
+        "kernel/sched/vendor_hooks.c": (
+            "EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_mmput);",
+            "EXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_mmput);\nEXPORT_TRACEPOINT_SYMBOL_GPL(android_vh_mmput_mm);",
+        ),
+    }
+    changes = {}
+    for filename, (before, after) in replacements.items():
+        original = (common / filename).read_text()
+        require(original.count(before) == 1 and after not in original, f"Unexpected Xiaomi compatibility patch context: {filename}")
+        updated = original.replace(before, after, 1)
+        if filename == "mm/swap_state.c":
+            require(original.count("#include <linux/mm.h>\n") == 1, "Unexpected swap_state includes")
+            updated = updated.replace("#include <linux/mm.h>\n", "#include <linux/mm.h>\n#include <linux/export.h>\n", 1)
+        changes[filename] = (original, updated)
+    symbol_list = "android/abi_gki_aarch64_xiaomi"
+    original = (common / symbol_list).read_text()
+    updated = original.rstrip() + "\n"
+    for symbol in PIANO_EXPORTS:
+        if symbol not in updated.splitlines():
+            updated += symbol + "\n"
+    changes[symbol_list] = (original, updated)
+    patch = []
+    for filename, (before, after) in changes.items():
+        patch.extend(difflib.unified_diff(before.splitlines(keepends=True), after.splitlines(keepends=True), fromfile="a/" + filename, tofile="b/" + filename))
+        (common / filename).write_text(after)
+    (output / "piano-lb-compat.patch").write_text("".join(patch))
+    (output / "piano-lb-compat.json").write_text(json.dumps({
+        "reference": "MiCode/Xiaomi_Kernel_OpenSource",
+        "reference_commit": "45fb9bd6ae5ba2942fc1d53e4b6b46ef76992f71",
+        "reference_branch": "piano-w-oss",
+        "reason": "Preserve the three missing exports required by the existing loaded Xiaomi lb.ko",
+        "expected_symbol_crcs": PIANO_EXPORTS,
+        "vfs_fadvise_already_exported_in_source": True,
+        "symbol_list_keeps_exports_from_being_trimmed": True,
     }, indent=2) + "\n")
 
 
@@ -109,6 +167,13 @@ def collect(root, output):
     for name in ("vmlinux", "System.map", "vmlinux.symvers", "kernel.release"):
         if (build / name).is_file():
             shutil.copyfile(build / name, output / name)
+    exports = {}
+    for line in (output / "Module.symvers").read_text().splitlines():
+        fields = line.split()
+        if len(fields) >= 3 and fields[2] == "vmlinux":
+            exports[fields[1]] = f"0x{int(fields[0], 16):08x}"
+    for symbol, expected in PIANO_EXPORTS.items():
+        require(exports.get(symbol) == expected, f"Xiaomi lb export missing or CRC mismatch: {symbol}")
     image = (output / "Image").read_bytes()
     config_start = image.find(b"IKCFG_ST")
     require(config_start >= 0, "Actual embedded kernel config missing")
@@ -143,7 +208,7 @@ if __name__ == "__main__":
     artifacts = Path(os.environ["GITHUB_WORKSPACE"]) / "piano-verification"
     artifacts.mkdir(exist_ok=True)
     try:
-        {"pin": pin, "prepare": prepare, "collect": collect}[sys.argv[1]](kernel_root, artifacts)
+        {"pin": pin, "adapt": adapt, "prepare": prepare, "collect": collect}[sys.argv[1]](kernel_root, artifacts)
     except Exception as error:
         (artifacts / "failure.json").write_text(json.dumps({"stage": sys.argv[1], "error": str(error)}, indent=2) + "\n")
         raise

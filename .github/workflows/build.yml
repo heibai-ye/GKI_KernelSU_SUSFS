@@ -1567,7 +1567,9 @@ jobs:
 
       - name: 核对 piano 构建前配置与补丁
         if: inputs.piano_verified_baseline
-        run: python3 scripts/piano_build.py prepare
+        run: |
+          python3 scripts/piano_build.py adapt
+          python3 scripts/piano_build.py prepare
 
       - name: 编译内核
         id: compile_kernel
