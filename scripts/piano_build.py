@@ -46,7 +46,8 @@ def check_source(common):
 def pin(root, output):
     common = root / "common"
     subprocess.run([
-        "git", "-C", str(common), "fetch", "--depth=1", "origin",
+        "git", "-C", str(common), "fetch", "--depth=1",
+        "https://android.googlesource.com/kernel/common",
         f"refs/tags/{SOURCE_TAG}",
     ], check=True)
     subprocess.run(["git", "-C", str(common), "checkout", "--detach", SOURCE_COMMIT], check=True)
@@ -141,4 +142,8 @@ if __name__ == "__main__":
     kernel_root = Path(os.environ["KERNEL_ROOT"])
     artifacts = Path(os.environ["GITHUB_WORKSPACE"]) / "piano-verification"
     artifacts.mkdir(exist_ok=True)
-    {"pin": pin, "prepare": prepare, "collect": collect}[sys.argv[1]](kernel_root, artifacts)
+    try:
+        {"pin": pin, "prepare": prepare, "collect": collect}[sys.argv[1]](kernel_root, artifacts)
+    except Exception as error:
+        (artifacts / "failure.json").write_text(json.dumps({"stage": sys.argv[1], "error": str(error)}, indent=2) + "\n")
+        raise
